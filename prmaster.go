@@ -173,7 +173,7 @@ func isReleaseBranch(s string) bool {
 }
 
 func deleteBranch(c config, s string) error {
-	if err := spawn("git", "push", "-d", c.username, s); err != nil {
+	if err := spawn("git", "push", "-d", c.remote, s); err != nil {
 		return err
 	}
 	if err := spawn("git", "show-ref", "--verify", "--quiet", "refs/heads/"+s); err == nil {
