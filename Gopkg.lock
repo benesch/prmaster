@@ -26,10 +26,26 @@
   revision = "d694e6f975a9109e2b063829d563a7c153c4b53c"
 
 [[projects]]
+  name = "github.com/mattn/go-isatty"
+  packages = ["."]
+  revision = "0360b2af4f38e8d38c7fce2a9f4e702702d73a39"
+  version = "v0.0.3"
+
+[[projects]]
   name = "github.com/pkg/errors"
   packages = ["."]
   revision = "645ef00459ed84a119197bfb8d8205042c6df63d"
   version = "v0.8.0"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/vbauerster/mpb"
+  packages = [
+    ".",
+    "cwriter",
+    "decor"
+  ]
+  revision = "3cb3a7dfc64caf87d82b2eb358f8ea9078c63687"
 
 [[projects]]
   branch = "master"
@@ -50,6 +66,12 @@
   revision = "6881fee410a5daf86371371f9ad451b95e168b71"
 
 [[projects]]
+  branch = "master"
+  name = "golang.org/x/sys"
+  packages = ["unix"]
+  revision = "bb9c189858d91f42db229b04d45a4c3d23a7662a"
+
+[[projects]]
   name = "google.golang.org/appengine"
   packages = [
     "internal",
@@ -66,6 +88,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "803aa3213db4e7a59972c1ca3e0571b11c8bebbfa8a9c60b08f2400a6e319493"
+  inputs-digest = "fd7a55e8a775054c3312c8d3e25650234c3cf823db93a247aa4d4c60db0f5f36"
   solver-name = "gps-cdcl"
   solver-version = 1

@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vbauerster/mpb/decor"
+
 	"golang.org/x/oauth2"
 
 	"github.com/google/go-github/github"
 	color "github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
+	"github.com/vbauerster/mpb"
 )
 
 const usage = `usage: prmaster <list|sync>`
@@ -85,101 +88,204 @@ func runList(ctx context.Context, c config) error {
 }
 
 func runSync(ctx context.Context, c config) error {
-	opt := &github.ListOptions{PerPage: 100}
-	branches, _, err := c.ghClient.Repositories.ListBranches(ctx, c.username, "cockroach", opt)
+	branches, err := loadBranches(ctx, c)
 	if err != nil {
 		return err
 	}
-	remoteBranches := map[string]struct{}{}
-	var remoteExtras []string
-	for _, branch := range branches {
-		colorName := color.Cyan(branch.GetName())
-		if isReleaseBranch(branch.GetName()) {
+	for i := range branches {
+		b := &branches[i]
+		colorName := color.Bold(b.name)
+		if b.isRelease() {
 			fmt.Printf("Skipping %s. Looks like a release branch.\n", colorName)
 			continue
 		}
-		remoteBranches[branch.GetName()] = struct{}{}
-		prOpts := &github.PullRequestListOptions{
-			State: "all",
-			Head:  fmt.Sprintf("%s:%s", c.username, branch.GetName()),
-		}
-		prs, _, err := c.ghClient.PullRequests.List(ctx, "cockroachdb", "cockroach", prOpts)
-		if err != nil {
-			return err
-		}
-		if len(prs) == 0 {
+		if b.pr.commit == nil {
 			fmt.Printf("Skipping %s. Not associated with any PRs.\n", colorName)
-			remoteExtras = append(remoteExtras, branch.GetName())
 			continue
 		}
-		// PRs are sorted so that the most recent PR is first.
-		pr := prs[0]
-		if pr.Head.GetSHA() != branch.Commit.GetSHA() {
-			fmt.Printf("Skipping %s. SHA does not match candidate PR #%d.\n",
-				colorName, pr.GetNumber())
-			remoteExtras = append(remoteExtras, branch.GetName())
+		if b.pr.GetState() == "open" {
+			fmt.Printf("Skipping %s. PR #%d is still open.\n", colorName, b.pr.GetNumber())
 			continue
 		}
-		if pr.GetState() == "closed" {
-			if err := deleteBranch(c, branch.GetName()); err != nil {
-				fmt.Printf("Unable to delete %s. (PR #%d is closed.)\nError: %s\n",
-					colorName, pr.GetNumber(), err)
+		if b.remote != nil {
+			if b.remote.sha == b.pr.sha || b.remote.commitDate.Before(b.pr.commitDate) {
+				if err := spawn("git", "push", "-qd", c.remote, b.name); err != nil {
+					return err
+				}
+				fmt.Printf("%s remote %s. PR #%d is closed.\n", color.Brown("Deleted"),
+					colorName, b.pr.GetNumber())
+				b.remote = nil
 			} else {
-				fmt.Printf("Deleted %s. PR #%d is closed.\n", colorName, pr.GetNumber())
+				fmt.Printf("Skipping remote %s. Branch commit is newer than #%d.\n",
+					colorName, b.pr.GetNumber())
 			}
-			continue
 		}
-		fmt.Printf("Skipping %s. PR #%d is still open.\n", colorName, pr.GetNumber())
+		if b.local != nil {
+			if b.local.sha == b.pr.sha || b.local.commitDate.Before(b.pr.commitDate) {
+				if err := spawn("git", "branch", "-qD", b.name); err != nil {
+					return err
+				}
+				fmt.Printf("%s local %s. PR #%d is closed.\n", color.Brown("Deleted"),
+					colorName, b.pr.GetNumber())
+				b.local = nil
+			} else {
+				fmt.Printf("Skipping local %s. Branch commit is newer than #%d.\n",
+					colorName, b.pr.GetNumber())
+			}
+		}
 	}
-	if len(remoteExtras) > 0 {
+
+	if noPRBranches := branches.filter(func(b branch) bool {
+		return !b.isRelease() && b.remote != nil && b.pr.commit == nil
+	}); len(noPRBranches) > 0 {
 		fmt.Println()
 		fmt.Println("These remote branches do not have open PRs:")
-		for _, b := range remoteExtras {
-			fmt.Printf("    %s\n", b)
+		for _, b := range noPRBranches {
+			fmt.Printf("    %s\n", b.name)
 		}
 		fmt.Println()
 		fmt.Printf("    Manage: https://github.com/%s/cockroach/branches/yours\n", c.username)
 	}
-	var localBranches, extras []string
-	{
-		out, err := capture("git", "for-each-ref", "--format", "%(refname:short)", "refs/heads")
-		if err != nil {
-			return err
-		}
-		localBranches = strings.Fields(out)
-	}
-	for _, b := range localBranches {
-		if isReleaseBranch(b) {
-			continue
-		}
-		if _, ok := remoteBranches[b]; !ok {
-			extras = append(extras, b)
-		}
-	}
-	if len(extras) > 0 {
+
+	if localOnlyBranches := branches.filter(func(b branch) bool {
+		return !b.isRelease() && b.local != nil && b.remote == nil
+	}); len(localOnlyBranches) > 0 {
 		fmt.Println()
 		fmt.Println("These local branches do not exist on your remote:")
-		for _, b := range extras {
-			fmt.Printf("    %s\n", b)
+		for _, b := range localOnlyBranches {
+			fmt.Printf("    %s\n", b.name)
 		}
 	}
+
 	fmt.Println()
 	fmt.Printf("Running `git remote prune %s`.\n", c.remote)
 	return spawn("git", "remote", "prune", c.remote)
 }
 
-func isReleaseBranch(s string) bool {
-	return s == "master" || strings.HasPrefix(s, "release-")
+type commit struct {
+	sha        string
+	commitDate time.Time
 }
 
-func deleteBranch(c config, s string) error {
-	if err := spawn("git", "push", "-d", c.remote, s); err != nil {
-		return err
+func newCommit(repoCommit *github.RepositoryCommit) *commit {
+	ghCommit := repoCommit.GetCommit()
+	return &commit{
+		sha:        ghCommit.GetSHA(),
+		commitDate: ghCommit.GetCommitter().GetDate(),
 	}
-	if err := spawn("git", "show-ref", "--verify", "--quiet", "refs/heads/"+s); err == nil {
-		return spawn("git", "branch", "-D", s)
+}
+
+type branch struct {
+	name   string
+	local  *commit
+	remote *commit
+	pr     struct {
+		*commit
+		*github.PullRequest
 	}
-	return nil
+}
+
+func loadBranches(ctx context.Context, c config) (branches, error) {
+	var branches branches
+
+	// Collect remote branches.
+	ghBranches, res, err := c.ghClient.Repositories.ListBranches(
+		ctx, c.username, "cockroach", &github.ListOptions{PerPage: 100})
+	if err != nil {
+		return nil, err
+	} else if res.NextPage != 0 {
+		fmt.Fprintln(os.Stderr, "warning: more than 100 remote branches; some will be omitted")
+	}
+	for _, b := range ghBranches {
+		branches = append(branches, branch{
+			name:   b.GetName(),
+			remote: newCommit(b.GetCommit()),
+		})
+	}
+
+	// Collect local branches.
+	out, err := capture("git", "for-each-ref", "--format",
+		"%(refname:short)\t%(objectname)\t%(committerdate:iso8601-strict)", "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+outer:
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			return nil, errors.New("`git for-each-ref` produced unexpected output")
+		}
+		name, sha := fields[0], fields[1]
+		date, err := time.Parse(time.RFC3339, fields[2])
+		if err != nil {
+			return nil, err
+		}
+		commit := &commit{sha: sha, commitDate: date}
+		for _, b := range branches {
+			if b.name == name {
+				b.local = commit
+				continue outer
+			}
+		}
+		branches = append(branches, branch{name: name, local: commit})
+	}
+
+	// Attach PR, if any.
+	progress := mpb.New(mpb.WithWidth(42))
+	defer progress.Wait()
+	bar := progress.AddBar(int64(len(branches)), mpb.BarRemoveOnComplete(),
+		mpb.PrependDecorators(
+			decor.StaticName("Fetching PR ", 0, 0),
+			decor.CountersNoUnit("%d / %d", 7, 0)),
+		mpb.AppendDecorators(
+			decor.ETA(0, 0),
+			decor.StaticName(" remaining", 0, 0)))
+	for i := range branches {
+		prOpts := &github.PullRequestListOptions{
+			State: "all",
+			Head:  fmt.Sprintf("%s:%s", c.username, branches[i].name),
+		}
+		prs, _, err := c.ghClient.PullRequests.List(ctx, "cockroachdb", "cockroach", prOpts)
+		if err != nil {
+			return nil, err
+		}
+		if len(prs) != 0 {
+			// PRs are sorted so that the most recent PR is first.
+			pr := prs[0]
+			commits, _, err := c.ghClient.PullRequests.ListCommits(ctx, "cockroachdb", "cockroach",
+				pr.GetNumber(), nil /* listOptions */)
+			if err != nil {
+				return nil, err
+			}
+			if len(commits) == 0 {
+				// TODO: Is this an error?
+				continue
+			}
+			branches[i].pr.PullRequest = pr
+			branches[i].pr.commit = newCommit(commits[len(commits)-1])
+		}
+		bar.Increment()
+	}
+
+	return branches, nil
+}
+
+var releaseMatcher = regexp.MustCompile(`master|release-\d`)
+
+func (b *branch) isRelease() bool {
+	return releaseMatcher.MatchString(b.name)
+}
+
+type branches []branch
+
+func (bs branches) filter(fn func(branch) bool) branches {
+	var out branches
+	for _, b := range bs {
+		if fn(b) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 type config struct {
