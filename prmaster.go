@@ -224,9 +224,9 @@ outer:
 			return nil, err
 		}
 		commit := &commit{sha: sha, commitDate: date}
-		for _, b := range branches {
-			if b.name == name {
-				b.local = commit
+		for i := range branches {
+			if branches[i].name == name {
+				branches[i].local = commit
 				continue outer
 			}
 		}
