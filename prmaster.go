@@ -110,11 +110,13 @@ func runSync(ctx context.Context, c config) error {
 		if b.remote != nil {
 			if b.remote.sha == b.pr.sha || b.remote.commitDate.Before(b.pr.commitDate) {
 				if err := spawn("git", "push", "-qd", c.remote, b.name); err != nil {
-					return err
+					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
+						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
+				} else {
+					fmt.Printf("%s remote %s. PR #%d is closed.\n", color.Brown("Deleted"),
+						colorName, b.pr.GetNumber())
+					b.remote = nil
 				}
-				fmt.Printf("%s remote %s. PR #%d is closed.\n", color.Brown("Deleted"),
-					colorName, b.pr.GetNumber())
-				b.remote = nil
 			} else {
 				fmt.Printf("Skipping remote %s. Branch commit is newer than #%d.\n",
 					colorName, b.pr.GetNumber())
@@ -123,11 +125,13 @@ func runSync(ctx context.Context, c config) error {
 		if b.local != nil {
 			if b.local.sha == b.pr.sha || b.local.commitDate.Before(b.pr.commitDate) {
 				if err := spawn("git", "branch", "-qD", b.name); err != nil {
-					return err
+					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
+						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
+				} else {
+					fmt.Printf("%s local %s. PR #%d is closed.\n", color.Brown("Deleted"),
+						colorName, b.pr.GetNumber())
+					b.local = nil
 				}
-				fmt.Printf("%s local %s. PR #%d is closed.\n", color.Brown("Deleted"),
-					colorName, b.pr.GetNumber())
-				b.local = nil
 			} else {
 				fmt.Printf("Skipping local %s. Branch commit is newer than #%d.\n",
 					colorName, b.pr.GetNumber())
@@ -168,10 +172,9 @@ type commit struct {
 }
 
 func newCommit(repoCommit *github.RepositoryCommit) *commit {
-	ghCommit := repoCommit.GetCommit()
 	return &commit{
-		sha:        ghCommit.GetSHA(),
-		commitDate: ghCommit.GetCommitter().GetDate(),
+		sha:        repoCommit.GetSHA(),
+		commitDate: repoCommit.GetCommit().GetCommitter().GetDate(),
 	}
 }
 
