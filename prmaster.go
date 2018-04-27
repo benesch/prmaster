@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,7 +20,8 @@ import (
 	"github.com/vbauerster/mpb"
 )
 
-const usage = `usage: prmaster <list|sync>`
+const usage = `usage: prmaster sync [-n]
+          or: prmaster list`
 
 func main() {
 	if err := run(context.Background()); err != nil {
@@ -45,7 +47,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	if len(os.Args) != 2 {
+	if len(os.Args) < 2 {
 		return errors.New(usage)
 	}
 
@@ -60,6 +62,9 @@ func run(ctx context.Context) error {
 }
 
 func runList(ctx context.Context, c config) error {
+	if len(os.Args) != 2 {
+		return errors.New(usage)
+	}
 	opts := &github.SearchOptions{
 		Sort: "created",
 	}
@@ -88,6 +93,20 @@ func runList(ctx context.Context, c config) error {
 }
 
 func runSync(ctx context.Context, c config) error {
+	var dryRun bool
+	flagSet := flag.NewFlagSet("sync", flag.ContinueOnError)
+	flagSet.BoolVar(&dryRun, "n", false, "don't actually delete any branches")
+	if err := flagSet.Parse(os.Args[2:]); err != nil {
+		return err
+	} else if flagSet.NArg() != 0 {
+		return errors.New(usage)
+	}
+
+	colorDelete := color.Brown("Deleted")
+	if dryRun {
+		colorDelete = color.Brown("Would delete")
+	}
+
 	branches, err := loadBranches(ctx, c)
 	if err != nil {
 		return err
@@ -109,11 +128,15 @@ func runSync(ctx context.Context, c config) error {
 		}
 		if b.remote != nil {
 			if b.remote.sha == b.pr.sha || b.remote.commitDate.Before(b.pr.commitDate) {
-				if err := spawn("git", "push", "-q", c.remote, "--delete", b.name); err != nil {
+				var err error
+				if !dryRun {
+					err = spawn("git", "push", "-q", c.remote, "--delete", b.name)
+				}
+				if err != nil {
 					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
 						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
 				} else {
-					fmt.Printf("%s remote %s. PR #%d is closed.\n", color.Brown("Deleted"),
+					fmt.Printf("%s remote %s. PR #%d is closed.\n", colorDelete,
 						colorName, b.pr.GetNumber())
 					b.remote = nil
 				}
@@ -124,11 +147,15 @@ func runSync(ctx context.Context, c config) error {
 		}
 		if b.local != nil {
 			if b.local.sha == b.pr.sha || b.local.commitDate.Before(b.pr.commitDate) {
-				if err := spawn("git", "branch", "-qD", b.name); err != nil {
+				var err error
+				if !dryRun {
+					err = spawn("git", "branch", "-qD", b.name)
+				}
+				if err != nil {
 					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
 						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
 				} else {
-					fmt.Printf("%s local %s. PR #%d is closed.\n", color.Brown("Deleted"),
+					fmt.Printf("%s local %s. PR #%d is closed.\n", colorDelete,
 						colorName, b.pr.GetNumber())
 					b.local = nil
 				}
