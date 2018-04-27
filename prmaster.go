@@ -109,7 +109,7 @@ func runSync(ctx context.Context, c config) error {
 		}
 		if b.remote != nil {
 			if b.remote.sha == b.pr.sha || b.remote.commitDate.Before(b.pr.commitDate) {
-				if err := spawn("git", "push", "-qd", c.remote, b.name); err != nil {
+				if err := spawn("git", "push", "-q", c.remote, "--delete", b.name); err != nil {
 					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
 						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
 				} else {
