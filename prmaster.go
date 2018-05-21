@@ -277,6 +277,7 @@ outer:
 		}
 		prs, _, err := c.ghClient.PullRequests.List(ctx, "cockroachdb", "cockroach", prOpts)
 		if err != nil {
+			progress.Abort(bar)
 			return nil, err
 		}
 		if len(prs) != 0 {
@@ -285,6 +286,7 @@ outer:
 			commits, _, err := c.ghClient.PullRequests.ListCommits(ctx, "cockroachdb", "cockroach",
 				pr.GetNumber(), nil /* listOptions */)
 			if err != nil {
+				progress.Abort(bar)
 				return nil, err
 			}
 			if len(commits) == 0 {
