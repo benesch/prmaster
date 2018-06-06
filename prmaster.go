@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vbauerster/mpb/decor"
-
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/google/go-github/github"
 	color "github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
 	"github.com/vbauerster/mpb"
+	"github.com/vbauerster/mpb/decor"
 )
 
 const usage = `usage: prmaster sync [-n]
@@ -270,33 +270,40 @@ outer:
 		mpb.AppendDecorators(
 			decor.ETA(0, 0),
 			decor.StaticName(" remaining", 0, 0)))
+	var g errgroup.Group
 	for i := range branches {
-		prOpts := &github.PullRequestListOptions{
-			State: "all",
-			Head:  fmt.Sprintf("%s:%s", c.username, branches[i].name),
-		}
-		prs, _, err := c.ghClient.PullRequests.List(ctx, "cockroachdb", "cockroach", prOpts)
-		if err != nil {
-			progress.Abort(bar)
-			return nil, err
-		}
-		if len(prs) != 0 {
-			// PRs are sorted so that the most recent PR is first.
-			pr := prs[0]
-			commits, _, err := c.ghClient.PullRequests.ListCommits(ctx, "cockroachdb", "cockroach",
-				pr.GetNumber(), nil /* listOptions */)
+		i := i
+		g.Go(func() error {
+			prOpts := &github.PullRequestListOptions{
+				State: "all",
+				Head:  fmt.Sprintf("%s:%s", c.username, branches[i].name),
+			}
+			prs, _, err := c.ghClient.PullRequests.List(ctx, "cockroachdb", "cockroach", prOpts)
 			if err != nil {
-				progress.Abort(bar)
-				return nil, err
+				return err
 			}
-			if len(commits) == 0 {
-				// TODO: Is this an error?
-				continue
+			if len(prs) != 0 {
+				// PRs are sorted so that the most recent PR is first.
+				pr := prs[0]
+				commits, _, err := c.ghClient.PullRequests.ListCommits(ctx, "cockroachdb", "cockroach",
+					pr.GetNumber(), nil /* listOptions */)
+				if err != nil {
+					return err
+				}
+				if len(commits) == 0 {
+					// TODO: Is this an error?
+					return nil
+				}
+				branches[i].pr.PullRequest = pr
+				branches[i].pr.commit = newCommit(commits[len(commits)-1])
 			}
-			branches[i].pr.PullRequest = pr
-			branches[i].pr.commit = newCommit(commits[len(commits)-1])
-		}
-		bar.Increment()
+			bar.Increment()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		progress.Abort(bar)
+		return nil, err
 	}
 
 	return branches, nil
