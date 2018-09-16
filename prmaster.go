@@ -102,7 +102,7 @@ func runSync(ctx context.Context, c config) error {
 		return errors.New(usage)
 	}
 
-	colorDelete := color.Brown("Deleted")
+	colorDelete := color.Brown("Deleting")
 	if dryRun {
 		colorDelete = color.Brown("Would delete")
 	}
@@ -111,11 +111,22 @@ func runSync(ctx context.Context, c config) error {
 	if err != nil {
 		return err
 	}
+
+	currentBranch, err := capture("git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return err
+	}
+
+	var localDeletes, remoteDeletes []*branch
 	for i := range branches {
 		b := &branches[i]
 		colorName := color.Bold(b.name)
 		if b.isRelease() {
 			fmt.Printf("Skipping %s. Looks like a release branch.\n", colorName)
+			continue
+		}
+		if b.name == currentBranch {
+			fmt.Printf("Skipping %s. It's checked out in your current worktree.\n", colorName)
 			continue
 		}
 		if b.pr.commit == nil {
@@ -128,18 +139,9 @@ func runSync(ctx context.Context, c config) error {
 		}
 		if b.remote != nil {
 			if b.remote.sha == b.pr.sha || b.remote.commitDate.Before(b.pr.commitDate) {
-				var err error
-				if !dryRun {
-					err = spawn("git", "push", "-q", c.remote, "--delete", b.name)
-				}
-				if err != nil {
-					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
-						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
-				} else {
-					fmt.Printf("%s remote %s. PR #%d is closed.\n", colorDelete,
-						colorName, b.pr.GetNumber())
-					b.remote = nil
-				}
+				remoteDeletes = append(remoteDeletes, b)
+				fmt.Printf("%s remote %s. PR #%d is closed.\n", colorDelete,
+					colorName, b.pr.GetNumber())
 			} else {
 				fmt.Printf("Skipping remote %s. Branch commit is newer than #%d.\n",
 					colorName, b.pr.GetNumber())
@@ -147,22 +149,34 @@ func runSync(ctx context.Context, c config) error {
 		}
 		if b.local != nil {
 			if b.local.sha == b.pr.sha || b.local.commitDate.Before(b.pr.commitDate) {
-				var err error
-				if !dryRun {
-					err = spawn("git", "branch", "-qD", b.name)
-				}
-				if err != nil {
-					fmt.Printf("%s %s. (PR #%d is closed.)\nError: %s\n",
-						color.Red("Unable to delete"), b.name, b.pr.GetNumber(), err)
-				} else {
-					fmt.Printf("%s local %s. PR #%d is closed.\n", colorDelete,
-						colorName, b.pr.GetNumber())
-					b.local = nil
-				}
+				localDeletes = append(localDeletes, b)
 			} else {
 				fmt.Printf("Skipping local %s. Branch commit is newer than #%d.\n",
 					colorName, b.pr.GetNumber())
 			}
+		}
+	}
+
+	if !dryRun && len(localDeletes) > 0 {
+		args := []string{"git", "branch", "-qD"}
+		for _, b := range localDeletes {
+			args = append(args, b.name)
+			b.local = nil
+		}
+		fmt.Printf("Deleting %d local branches...\n", len(localDeletes))
+		if err := spawn(args...); err != nil {
+			return fmt.Errorf("deleting local branches: %s", err)
+		}
+	}
+	if !dryRun && len(remoteDeletes) > 0 {
+		args := []string{"git", "push", "-qd", c.remote}
+		for _, b := range remoteDeletes {
+			args = append(args, b.name)
+			b.remote = nil
+		}
+		fmt.Printf("Deleting %d remote branches...\n", len(remoteDeletes))
+		if err := spawn(args...); err != nil {
+			return fmt.Errorf("deleting remote branches: %s", err)
 		}
 	}
 
@@ -189,7 +203,7 @@ func runSync(ctx context.Context, c config) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("Running `git remote prune %s`.\n", c.remote)
+	fmt.Printf("Running `git remote prune %s`...\n", c.remote)
 	return spawn("git", "remote", "prune", c.remote)
 }
 
