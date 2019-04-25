@@ -10,14 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/oauth2"
-	"golang.org/x/sync/errgroup"
-
 	"github.com/google/go-github/github"
 	color "github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
+	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 )
 
 const usage = `usage: prmaster sync [-n]
@@ -30,8 +29,8 @@ func main() {
 		cause := errors.Cause(err)
 		if _, ok := cause.(*github.RateLimitError); ok {
 			fmt.Fprintln(os.Stderr, `hint: unauthenticated GitHub requests are subject to a very strict rate
-limit. Please configure backport with a personal access token:
-			$ git config cockroach.githubToken TOKEN
+limit. Please configure prmaster with a personal access token:
+    $ git config --global prmaster.githubToken TOKEN
 For help creating a personal access token, see https://goo.gl/Ep2E6x.`)
 		} else if err, ok := cause.(hintedErr); ok {
 			fmt.Fprintf(os.Stderr, "hint: %s\n", err.hint)
@@ -42,13 +41,13 @@ For help creating a personal access token, see https://goo.gl/Ep2E6x.`)
 }
 
 func run(ctx context.Context) error {
+	if len(os.Args) < 2 {
+		return errors.New(usage)
+	}
+
 	c, err := loadConfig(ctx)
 	if err != nil {
 		return err
-	}
-
-	if len(os.Args) < 2 {
-		return errors.New(usage)
 	}
 
 	switch cmd := os.Args[1]; cmd {
@@ -68,13 +67,14 @@ func runList(ctx context.Context, c config) error {
 	opts := &github.SearchOptions{
 		Sort: "created",
 	}
-	query := fmt.Sprintf("type:pr is:open repo:cockroachdb/cockroach author:%s", c.username)
+	query := fmt.Sprintf("type:pr is:open repo:%s/%s author:%s",
+		c.upstreamUsername, c.repo, c.username)
 	res, _, err := c.ghClient.Search.Issues(ctx, query, opts)
 	if err != nil {
 		return err
 	}
 	for _, issue := range res.Issues {
-		pr, _, err := c.ghClient.PullRequests.Get(ctx, "cockroachdb", "cockroach", *issue.Number)
+		pr, _, err := c.ghClient.PullRequests.Get(ctx, c.upstreamUsername, c.repo, *issue.Number)
 		if err != nil {
 			return err
 		}
@@ -85,9 +85,10 @@ func runList(ctx context.Context, c config) error {
 			dateColor = color.Brown
 		}
 		fmt.Printf(
-			"%s\n    Branch %s. Opened %s.\n    https://github.com/cockroachdb/cockroach/pull/%d\n",
+			"%s\n    Branch %s. Opened %s.\n    https://github.com/%s/%s/pull/%d\n",
 			color.Bold(*pr.Title), color.Cyan(*pr.Head.Ref),
-			dateColor(pr.CreatedAt.Format("2006-01-02")), *pr.Number)
+			dateColor(pr.CreatedAt.Format("2006-01-02")),
+			c.upstreamUsername, c.repo, *pr.Number)
 	}
 	return nil
 }
@@ -168,15 +169,19 @@ func runSync(ctx context.Context, c config) error {
 			return fmt.Errorf("deleting local branches: %s", err)
 		}
 	}
-	if !dryRun && len(remoteDeletes) > 0 {
-		args := []string{"git", "push", "-qd", c.remote}
-		for _, b := range remoteDeletes {
-			args = append(args, b.name)
-			b.remote = nil
-		}
-		fmt.Printf("Deleting %d remote branches...\n", len(remoteDeletes))
-		if err := spawn(args...); err != nil {
-			return fmt.Errorf("deleting remote branches: %s", err)
+	if len(remoteDeletes) > 0 {
+		if !dryRun {
+			args := []string{"git", "push", "-qd", c.remote}
+			for _, b := range remoteDeletes {
+				args = append(args, b.name)
+				b.remote = nil
+			}
+			fmt.Printf("Deleting %d remote branches...\n", len(remoteDeletes))
+			if err := spawn(args...); err != nil {
+				return fmt.Errorf("deleting remote branches: %s", err)
+			}
+		} else {
+			fmt.Printf("Would delete %d remote branches.\n", len(remoteDeletes))
 		}
 	}
 
@@ -189,7 +194,7 @@ func runSync(ctx context.Context, c config) error {
 			fmt.Printf("    %s\n", b.name)
 		}
 		fmt.Println()
-		fmt.Printf("    Manage: https://github.com/%s/cockroach/branches/yours\n", c.username)
+		fmt.Printf("    Manage: https://github.com/%s/%s/branches/yours\n", c.username, c.repo)
 	}
 
 	if localOnlyBranches := branches.filter(func(b branch) bool {
@@ -203,8 +208,12 @@ func runSync(ctx context.Context, c config) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("Running `git remote prune %s`...\n", c.remote)
-	return spawn("git", "remote", "prune", c.remote)
+	if !dryRun {
+		fmt.Printf("Running `git remote prune %s`...\n", c.remote)
+		return spawn("git", "remote", "prune", c.remote)
+	}
+	fmt.Printf("Would run `git remote prune %s`.\n", c.remote)
+	return nil
 }
 
 type commit struct {
@@ -234,7 +243,7 @@ func loadBranches(ctx context.Context, c config) (branches, error) {
 
 	// Collect remote branches.
 	ghBranches, res, err := c.ghClient.Repositories.ListBranches(
-		ctx, c.username, "cockroach", &github.ListOptions{PerPage: 100})
+		ctx, c.username, c.repo, &github.ListOptions{PerPage: 100})
 	if err != nil {
 		return nil, err
 	} else if res.NextPage != 0 {
@@ -292,15 +301,15 @@ outer:
 				State: "all",
 				Head:  fmt.Sprintf("%s:%s", c.username, branches[i].name),
 			}
-			prs, _, err := c.ghClient.PullRequests.List(ctx, "cockroachdb", "cockroach", prOpts)
+			prs, _, err := c.ghClient.PullRequests.List(ctx, c.upstreamUsername, c.repo, prOpts)
 			if err != nil {
 				return err
 			}
 			if len(prs) != 0 {
 				// PRs are sorted so that the most recent PR is first.
 				pr := prs[0]
-				commits, _, err := c.ghClient.PullRequests.ListCommits(ctx, "cockroachdb", "cockroach",
-					pr.GetNumber(), nil /* listOptions */)
+				commits, _, err := c.ghClient.PullRequests.ListCommits(ctx, c.upstreamUsername,
+					c.repo, pr.GetNumber(), nil /* listOptions */)
 				if err != nil {
 					return err
 				}
@@ -342,25 +351,69 @@ func (bs branches) filter(fn func(branch) bool) branches {
 }
 
 type config struct {
-	ghClient *github.Client
-	remote   string
-	username string
-	gitDir   string
+	ghClient         *github.Client
+	upstreamUsername string
+	repo             string
+	remote           string
+	username         string
+	gitDir           string
+}
+
+var errNoRemote = errors.New("remote does not exist")
+
+func tryUpstream(remote string) (upstreamUsername, repo string, err error) {
+	upstreamURL, _ := capture("git", "config", "--get", fmt.Sprintf("remote.%s.url", remote))
+	if upstreamURL == "" {
+		return "", "", errNoRemote
+	}
+	m := regexp.MustCompile(`github.com(:|/)([[:alnum:]\-]+)/([[:alnum:]\-]+)`).FindStringSubmatch(upstreamURL)
+	if len(m) != 4 {
+		return "", "", errors.Errorf("unable to guess upstream GitHub information from remote %q (%s)",
+			remote, upstreamURL)
+	}
+	return m[2], m[3], nil
 }
 
 func loadConfig(ctx context.Context) (config, error) {
 	var c config
 
+	// Determine upstream username and repo.
+	var err error
+	c.upstreamUsername, c.repo, err = tryUpstream("upstream")
+	if err != nil {
+		if err != errNoRemote {
+			return c, err
+		}
+		c.upstreamUsername, c.repo, err = tryUpstream("origin")
+		if err == errNoRemote {
+			return c, hintedErr{
+				error: errors.New("unable to guess upstream GitHub information"),
+				hint: `ensure you have a remote named either "upstream" or "origin" that is
+configured with a GitHub URL`,
+			}
+		} else if err != nil {
+			return c, err
+		}
+	}
+
 	// Determine remote.
-	c.remote, _ = capture("git", "config", "--get", "cockroach.remote")
+	c.remote, _ = capture("git", "config", "--get", "prmaster.personalRemote")
 	if c.remote == "" {
-		return c, hintedErr{
-			error: errors.New("missing cockroach.remote configuration"),
-			hint: `set cockroach.remote to the name of the Git remote to check
+		hint := `set prmaster.personalRemote to the name of the Git remote to check
 for personal branches. For example:
 
-    $ git config cockroach.remote origin
-`,
+    $ git config prmaster.personalRemote benesch
+`
+
+		if r, _ := capture("git", "config", "--get", "cockroach.remote"); r != "" {
+			hint += `
+The old configuration setting, cockroach.remote, is no longer checked.
+`
+		}
+
+		return c, hintedErr{
+			error: errors.New("missing prmaster.personalRemote configuration"),
+			hint:  hint,
 		}
 	}
 
@@ -373,7 +426,7 @@ for personal branches. For example:
 	if len(m) != 3 {
 		return c, errors.Errorf("unable to guess GitHub username from remote %q (%s)",
 			c.remote, remoteURL)
-	} else if m[2] == "cockroachdb" {
+	} else if m[2] == c.upstreamUsername {
 		return c, errors.Errorf("refusing to use unforked remote %q (%s)",
 			c.remote, remoteURL)
 	}
@@ -381,7 +434,10 @@ for personal branches. For example:
 
 	// Build GitHub client.
 	var ghAuthClient *http.Client
-	ghToken, _ := capture("git", "config", "--get", "cockroach.githubToken")
+	ghToken, _ := capture("git", "config", "--get", "prmaster.githubToken")
+	if ghToken == "" {
+		ghToken, _ = capture("git", "config", "--get", "cockroach.githubToken")
+	}
 	if ghToken != "" {
 		ghAuthClient = oauth2.NewClient(ctx, oauth2.StaticTokenSource(
 			&oauth2.Token{AccessToken: ghToken}))

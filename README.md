@@ -9,10 +9,11 @@ $ go get -u github.com/benesch/prmaster
 $ prmaster <list|sync>
 ```
 
-Pretty self explanatory. More information to come. It only works within a
-[cockroachdb/cockroach] repository for now.
+Pretty self explanatory. More information to come.
 
 ## Example
+
+Running in [cockroachdb/cockroach]:
 
 <img src="screenshot.png" width="485" />
 
