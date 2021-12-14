@@ -294,9 +294,20 @@ outer:
 			decor.ETA(0, 0),
 			decor.StaticName(" remaining", 0, 0)))
 	var g errgroup.Group
+	// Limit concurrency. The GitHub API doesn't like too many concurrent
+	// requests. It may throw a "secondary rate limit" error if it observed too
+	// much concurrency. This is true even for authenticated users and even if
+	// the total rate of requests stays below the "primary" rate limit.
+	//
+	// From https://docs.github.com/en/rest/guides/best-practices-for-integrators#dealing-with-secondary-rate-limits:
+	// > Make requests for a single user or client ID serially. Do not make
+	// > requests for a single user or client ID concurrently.
+	sem := make(chan struct{}, 32)
 	for i := range branches {
 		i := i
 		g.Go(func() error {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			prOpts := &github.PullRequestListOptions{
 				State: "all",
 				Head:  fmt.Sprintf("%s:%s", c.username, branches[i].name),
