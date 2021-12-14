@@ -5,7 +5,7 @@ CLI PR management for OCD developers.
 ## Usage
 
 ```shell
-$ go get -u github.com/benesch/prmaster
+$ go install github.com/benesch/prmaster@latest
 $ prmaster <list|sync>
 ```
 
