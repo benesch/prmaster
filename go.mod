@@ -3,16 +3,17 @@ module github.com/benesch/prmaster
 go 1.13
 
 require (
-	github.com/golang/protobuf v1.0.0 // indirect
-	github.com/google/go-github v15.0.0+incompatible
-	github.com/google/go-querystring v0.0.0-20170111101155-53e6ce116135 // indirect
-	github.com/logrusorgru/aurora v0.0.0-20180419164547-d694e6f975a9
-	github.com/mattn/go-isatty v0.0.3 // indirect
-	github.com/pkg/errors v0.8.0
+	github.com/golang/protobuf v1.5.2 // indirect
+	github.com/google/go-github v17.0.0+incompatible
+	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/logrusorgru/aurora v2.0.3+incompatible
+	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/pkg/errors v0.9.1
 	github.com/vbauerster/mpb v3.2.1-0.20180425214904-3cb3a7dfc64c+incompatible
-	golang.org/x/net v0.0.0-20180420171651-5f9ae10d9af5 // indirect
-	golang.org/x/oauth2 v0.0.0-20180416194528-6881fee410a5
-	golang.org/x/sync v0.0.0-20180314180146-1d60e4601c6f
-	golang.org/x/sys v0.0.0-20180425194835-bb9c189858d9 // indirect
-	google.golang.org/appengine v1.0.0 // indirect
+	golang.org/x/net v0.0.0-20211209124913-491a49abca63 // indirect
+	golang.org/x/oauth2 v0.0.0-20211104180415-d3ed0bb246c8
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
+	golang.org/x/sys v0.0.0-20211213223007-03aa0b5f6827 // indirect
+	google.golang.org/appengine v1.6.7 // indirect
+	google.golang.org/protobuf v1.27.1 // indirect
 )
