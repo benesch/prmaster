@@ -1,4 +1,4 @@
-# [WIP] prmaster
+# prmaster
 
 CLI PR management for OCD developers.
 
@@ -9,7 +9,29 @@ $ go install github.com/benesch/prmaster@latest
 $ prmaster <list|sync>
 ```
 
-Pretty self explanatory. More information to come.
+To use a PR flow based on personal forks:
+
+```
+$ git config prmaster.personalRemote benesch
+```
+
+To use a PR flow based on pushing directly to the origin:
+
+```
+$ git config prmaster.personalRemote none
+$ git config prmaster.branchPrefix benesch/
+```
+
+To access a private repository, you'll need to provide prmaster with a personal
+access token that has access to the desired repository:
+
+```
+$ git config prmaster.githubToken ghp_Kre5dO1...
+```
+
+Consider adding a personal access token even if you're only using prmaster with
+public repositories. Authenticated requests to the GitHub API enjoy a much
+higher rate limit than unauthenticated requests.
 
 ## Example
 

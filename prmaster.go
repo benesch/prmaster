@@ -241,19 +241,27 @@ type branch struct {
 func loadBranches(ctx context.Context, c config) (branches, error) {
 	var branches branches
 
-	// Collect remote branches.
-	ghBranches, res, err := c.ghClient.Repositories.ListBranches(
-		ctx, c.username, c.repo, &github.ListOptions{PerPage: 100})
-	if err != nil {
-		return nil, err
-	} else if res.NextPage != 0 {
-		fmt.Fprintln(os.Stderr, "warning: more than 100 remote branches; some will be omitted")
+	username := c.upstreamUsername
+	if c.personal {
+		username = c.username
 	}
-	for _, b := range ghBranches {
-		branches = append(branches, branch{
-			name:   b.GetName(),
-			remote: newCommit(b.GetCommit()),
-		})
+
+	// Collect remote branches.
+	for page := 1; page != 0; {
+		ghBranches, res, err := c.ghClient.Repositories.ListBranches(
+			ctx, username, c.repo, &github.ListOptions{PerPage: 100, Page: page})
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range ghBranches {
+			if strings.HasPrefix(b.GetName(), c.branchPrefix) {
+				branches = append(branches, branch{
+					name:   b.GetName(),
+					remote: newCommit(b.GetCommit()),
+				})
+			}
+		}
+		page = res.NextPage
 	}
 
 	// Collect local branches.
@@ -280,7 +288,9 @@ outer:
 				continue outer
 			}
 		}
-		branches = append(branches, branch{name: name, local: commit})
+		if strings.HasPrefix(name, c.branchPrefix) {
+			branches = append(branches, branch{name: name, local: commit})
+		}
 	}
 
 	// Attach PR, if any.
@@ -310,7 +320,7 @@ outer:
 			defer func() { <-sem }()
 			prOpts := &github.PullRequestListOptions{
 				State: "all",
-				Head:  fmt.Sprintf("%s:%s", c.username, branches[i].name),
+				Head:  fmt.Sprintf("%s:%s", username, branches[i].name),
 			}
 			prs, _, err := c.ghClient.PullRequests.List(ctx, c.upstreamUsername, c.repo, prOpts)
 			if err != nil {
@@ -367,6 +377,8 @@ type config struct {
 	repo             string
 	remote           string
 	username         string
+	personal         bool
+	branchPrefix     string
 	gitDir           string
 }
 
@@ -390,11 +402,13 @@ func loadConfig(ctx context.Context) (config, error) {
 
 	// Determine upstream username and repo.
 	var err error
+	upstreamRemote := "upstream"
 	c.upstreamUsername, c.repo, err = tryUpstream("upstream")
 	if err != nil {
 		if err != errNoRemote {
 			return c, err
 		}
+		upstreamRemote = "origin"
 		c.upstreamUsername, c.repo, err = tryUpstream("origin")
 		if err == errNoRemote {
 			return c, hintedErr{
@@ -414,6 +428,13 @@ configured with a GitHub URL`,
 for personal branches. For example:
 
     $ git config prmaster.personalRemote benesch
+
+If you don't use personal remotes, you can set prmaster.personalRemote to
+the special value "none", then use the prmaster.branchPrefix configuration to
+limit prmaster to only branches that begin with that string. For example:
+
+    $ git config prmaster.personalRemote none
+    $ git config prmaster.branchPrefix benesch/
 `
 
 		if r, _ := capture("git", "config", "--get", "cockroach.remote"); r != "" {
@@ -428,20 +449,26 @@ The old configuration setting, cockroach.remote, is no longer checked.
 		}
 	}
 
-	// Determine username.
-	remoteURL, err := capture("git", "remote", "get-url", "--push", c.remote)
-	if err != nil {
-		return c, errors.Wrapf(err, "determining URL for remote %q", c.remote)
+	if c.remote == "none" {
+		c.remote = upstreamRemote
+	} else {
+		c.personal = true
+		remoteURL, err := capture("git", "remote", "get-url", "--push", c.remote)
+		if err != nil {
+			return c, errors.Wrapf(err, "determining URL for remote %q", c.remote)
+		}
+		m := regexp.MustCompile(`github.com(:|/)([[:alnum:]\-]+)`).FindStringSubmatch(remoteURL)
+		if len(m) != 3 {
+			return c, errors.Errorf("unable to guess GitHub username from remote %q (%s)",
+				c.remote, remoteURL)
+		} else if m[2] == c.upstreamUsername {
+			return c, errors.Errorf("refusing to use unforked remote %q (%s)",
+				c.remote, remoteURL)
+		}
 	}
-	m := regexp.MustCompile(`github.com(:|/)([[:alnum:]\-]+)`).FindStringSubmatch(remoteURL)
-	if len(m) != 3 {
-		return c, errors.Errorf("unable to guess GitHub username from remote %q (%s)",
-			c.remote, remoteURL)
-	} else if m[2] == c.upstreamUsername {
-		return c, errors.Errorf("refusing to use unforked remote %q (%s)",
-			c.remote, remoteURL)
-	}
-	c.username = m[2]
+
+	// Determine branch prefix, if any.
+	c.branchPrefix, _ = capture("git", "config", "--get", "prmaster.branchPrefix")
 
 	// Build GitHub client.
 	var ghAuthClient *http.Client
@@ -454,6 +481,12 @@ The old configuration setting, cockroach.remote, is no longer checked.
 			&oauth2.Token{AccessToken: ghToken}))
 	}
 	c.ghClient = github.NewClient(ghAuthClient)
+
+	user, _, err := c.ghClient.Users.Get(ctx, "")
+	if err != nil {
+		return c, errors.Wrap(err, "looking up GitHub username")
+	}
+	c.username = *user.Login
 
 	// Determine Git directory.
 	c.gitDir, err = capture("git", "rev-parse", "--git-dir")
