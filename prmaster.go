@@ -151,6 +151,8 @@ func runSync(ctx context.Context, c config) error {
 		if b.local != nil {
 			if b.local.sha == b.pr.sha || b.local.commitDate.Before(b.pr.commitDate) {
 				localDeletes = append(localDeletes, b)
+				fmt.Printf("%s local %s. PR #%d is closed.\n", colorDelete,
+					colorName, b.pr.GetNumber())
 			} else {
 				fmt.Printf("Skipping local %s. Branch commit is newer than #%d.\n",
 					colorName, b.pr.GetNumber())
